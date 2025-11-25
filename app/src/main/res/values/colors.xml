@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Base Colors -->
+    <color name="black">#FF000000</color>
+    <color name="white">#FFFFFFFF</color>
+
+    <!-- Athletic Theme Colors -->
+    <color name="color_primary">#1A1A1A</color> <!-- Near Black -->
+    <color name="color_on_primary">#FFFFFF</color> <!-- White -->
+    <color name="color_primary_variant">#2C2C2C</color> <!-- Dark Gray -->
+    
+    <color name="color_secondary">#4CAF50</color> <!-- Vibrant Green -->
+    <color name="color_on_secondary">#FFFFFF</color> <!-- White -->
+    
+    <color name="color_surface">#2C2C2C</color> <!-- Dark Gray -->
+    <color name="color_on_surface">#FFFFFF</color> <!-- White -->
+    
+    <color name="color_background">#FFFFFF</color> <!-- Near Black -->
+    <color name="color_on_background">#FFFFFF</color> <!-- White -->
+    
+    <color name="color_error">#F44336</color> <!-- Red -->
+    <color name="color_on_error">#FFFFFF</color> <!-- White -->
+</resources>
