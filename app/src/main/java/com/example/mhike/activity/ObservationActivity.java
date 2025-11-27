@@ -11,7 +11,7 @@ import android.provider.MediaStore;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.ImageView;
-import android.widget.LinearLayout; // Needed for Edit Dialog
+import android.widget.LinearLayout;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -40,12 +40,15 @@ import java.util.Locale;
 
 public class ObservationActivity extends AppCompatActivity implements ObservationAdapter.OnItemClickListener {
 
+    // Unique ID of the Hike these observations belong to
     private long hikeId;
+
+    // Database and List Adapter
     private HikeDAO hikeDAO;
     private ObservationAdapter adapter;
     private List<Observation> observationList;
 
-    // UI Components
+    // UI Components (Input Form)
     private TextView parentHikeNameTextView;
     private EditText obsDetailInput, obsTimeInput, obsCommentInput;
     private Button addObservationButton;
@@ -53,26 +56,31 @@ public class ObservationActivity extends AppCompatActivity implements Observatio
     private ImageView imageViewObservation;
     private Button btnAddPhoto;
 
-    // Image Paths
-    private String currentPhotoPath;
-    private String tempCameraPath;
+    // Image Path Variables (For Camera/Gallery)
+    private String currentPhotoPath; // Path of the final compressed image
+    private Uri tempCameraUri;   // Temporary path for raw camera image
 
-    private ActivityResultLauncher<Intent> cameraLauncher;
-    private ActivityResultLauncher<Intent> galleryLauncher;
+    // Activity Result Launchers (Replaces deprecated startActivityForResult)
+    private ActivityResultLauncher<Uri> cameraLauncher;
+    private ActivityResultLauncher<String> galleryLauncher;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_observation);
 
+        // Setup Toolbar with Back Navigation
         com.google.android.material.appbar.MaterialToolbar toolbar = findViewById(R.id.toolbar);
         toolbar.setNavigationOnClickListener(v -> finish());
 
+        // Initialize Database Helper
         hikeDAO = new HikeDAO(this);
 
+        // Initialize Views and Image Handling Logic
         initializeViews();
         setupImageLaunchers();
 
+        // Retrieve Hike ID passed from the previous activity
         hikeId = getIntent().getLongExtra("HIKE_ID", -1);
         if (hikeId == -1) {
             Toast.makeText(this, "Error: No Hike selected.", Toast.LENGTH_SHORT).show();
@@ -80,11 +88,13 @@ public class ObservationActivity extends AppCompatActivity implements Observatio
             return;
         }
 
+        // Load Initial Data
         loadParentHikeName();
         setupRecyclerView();
         setDefaultTime();
         loadObservations();
 
+        // Set Click Listeners
         addObservationButton.setOnClickListener(v -> addObservation());
         btnAddPhoto.setOnClickListener(v -> showImagePickDialog());
     }
@@ -103,33 +113,92 @@ public class ObservationActivity extends AppCompatActivity implements Observatio
     private void setupRecyclerView() {
         observationList = new ArrayList<>();
         recyclerViewObservations.setLayoutManager(new LinearLayoutManager(this));
-        adapter = new ObservationAdapter(this, observationList, this); // 'this' listens for clicks
+        // Pass 'this' as the listener to handle item clicks
+        adapter = new ObservationAdapter(this, observationList, this);
         recyclerViewObservations.setAdapter(adapter);
     }
 
-    // --- 1. THIS IS THE MISSING LOGIC FOR EDIT/DELETE ---
+    // --- CRUD: READ & DISPLAY DATA ---
+    private void loadObservations() {
+        // Fetch only observations linked to the current Hike ID
+        List<Observation> fetchedObservations = hikeDAO.getObservationsForHike(hikeId);
+        observationList.clear();
+        observationList.addAll(fetchedObservations);
+        adapter.notifyDataSetChanged();
+    }
+
+    private void loadParentHikeName() {
+        Hike parentHike = hikeDAO.getHike(hikeId);
+        if (parentHike != null) {
+            parentHikeNameTextView.setText("Observations for: " + parentHike.getName());
+        }
+    }
+
+    private void setDefaultTime() {
+        SimpleDateFormat sdf = new SimpleDateFormat("dd/MM/yyyy HH:mm:ss", Locale.getDefault());
+        obsTimeInput.setText(sdf.format(new Date()));
+    }
+
+    // --- CRUD: CREATE (ADD NEW OBSERVATION) ---
+    private void addObservation() {
+        String detail = obsDetailInput.getText().toString().trim();
+        String time = obsTimeInput.getText().toString().trim();
+        String comment = obsCommentInput.getText().toString().trim();
+
+        if (detail.isEmpty()) {
+            obsDetailInput.setError("Detail is required.");
+            return;
+        }
+
+        Observation observation = new Observation();
+        observation.setHikeId((int) hikeId);
+        observation.setObservationDetail(detail);
+        observation.setTimeOfObservation(time);
+        observation.setAdditionalComments(comment);
+
+        // Save image path if a photo was taken/selected
+        if (currentPhotoPath != null) {
+            observation.setImagePath(currentPhotoPath);
+        }
+
+        // Insert into Database
+        if (hikeDAO.addObservation(observation) > 0) {
+            Toast.makeText(this, "Observation added successfully!", Toast.LENGTH_SHORT).show();
+            // Clear form fields
+            obsDetailInput.setText("");
+            obsCommentInput.setText("");
+            imageViewObservation.setImageResource(android.R.drawable.ic_menu_camera); // Reset image preview
+            currentPhotoPath = null;
+            setDefaultTime();
+            loadObservations(); // Refresh the list
+        } else {
+            Toast.makeText(this, "Error adding observation.", Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    // --- CRUD: UPDATE & DELETE (HANDLE LIST ITEM CLICKS) ---
     @Override
     public void onItemClick(Observation observation) {
-        // When user taps a row, ask what they want to do
+        // Show a dialog asking the user to Edit or Delete
         String[] options = {"Edit Observation", "Delete Observation"};
         new AlertDialog.Builder(this)
                 .setTitle("Manage Observation")
                 .setItems(options, (dialog, which) -> {
                     if (which == 0) {
-                        showEditDialog(observation); // CALL EDIT
+                        showEditDialog(observation); // Edit option
                     } else {
-                        confirmDelete(observation);  // CALL DELETE
+                        confirmDelete(observation);  // Delete option
                     }
                 })
                 .show();
     }
 
-    // --- 2. SHOW THE EDIT POPUP FORM ---
+    // --- CRUD: UPDATE DIALOG LOGIC ---
     private void showEditDialog(Observation observation) {
         AlertDialog.Builder builder = new AlertDialog.Builder(this);
         builder.setTitle("Edit Observation");
 
-        // Create layout programmatically
+        // Create a custom layout for the dialog programmatically
         LinearLayout layout = new LinearLayout(this);
         layout.setOrientation(LinearLayout.VERTICAL);
         layout.setPadding(50, 40, 50, 10);
@@ -151,7 +220,7 @@ public class ObservationActivity extends AppCompatActivity implements Observatio
 
         builder.setView(layout);
 
-        // Update Button Logic
+        // Update Button Action
         builder.setPositiveButton("Update", (dialog, which) -> {
             String newDetail = inputDetail.getText().toString().trim();
             String newTime = inputTime.getText().toString().trim();
@@ -162,18 +231,18 @@ public class ObservationActivity extends AppCompatActivity implements Observatio
                 return;
             }
 
-            // Set new values
+            // Set new values to the object
             observation.setObservationDetail(newDetail);
             observation.setTimeOfObservation(newTime);
             observation.setAdditionalComments(newComments);
 
-            // Save to DB
+            // Update Database
             int result = hikeDAO.updateObservation(observation);
             if (result > 0) {
-                Toast.makeText(this, "Updated!", Toast.LENGTH_SHORT).show();
-                loadObservations(); // REFRESH LIST
+                Toast.makeText(this, "Updated successfully!", Toast.LENGTH_SHORT).show();
+                loadObservations(); // Refresh List
             } else {
-                Toast.makeText(this, "Update failed", Toast.LENGTH_SHORT).show();
+                Toast.makeText(this, "Update failed.", Toast.LENGTH_SHORT).show();
             }
         });
 
@@ -181,13 +250,17 @@ public class ObservationActivity extends AppCompatActivity implements Observatio
         builder.show();
     }
 
+    // --- CRUD: DELETE LOGIC ---
     private void confirmDelete(Observation observation) {
         new AlertDialog.Builder(this)
                 .setTitle("Delete Observation")
-                .setMessage("Are you sure?")
+                .setMessage("Are you sure you want to delete this observation?")
                 .setPositiveButton("Yes", (dialog, which) -> {
-                    hikeDAO.deleteObservation(observation.getId());
-                    loadObservations();
+                    // Delete from Database
+                    if (hikeDAO.deleteObservation(observation.getId()) > 0) {
+                        Toast.makeText(this, "Deleted successfully.", Toast.LENGTH_SHORT).show();
+                        loadObservations(); // Refresh List
+                    }
                 })
                 .setNegativeButton("No", null)
                 .show();
@@ -195,79 +268,32 @@ public class ObservationActivity extends AppCompatActivity implements Observatio
 
     @Override
     public void onDeleteClick(Observation observation) {
-        // Interface requirement, can redirect to confirmDelete
         confirmDelete(observation);
     }
 
-    // --- EXISTING METHODS (ADD, LOAD, CAMERA) ---
-
-    private void addObservation() {
-        String detail = obsDetailInput.getText().toString().trim();
-        String time = obsTimeInput.getText().toString().trim();
-        String comment = obsCommentInput.getText().toString().trim();
-
-        if (detail.isEmpty()) {
-            obsDetailInput.setError("Required");
-            return;
-        }
-
-        Observation observation = new Observation();
-        observation.setHikeId((int) hikeId);
-        observation.setObservationDetail(detail);
-        observation.setTimeOfObservation(time);
-        observation.setAdditionalComments(comment);
-        if (currentPhotoPath != null) {
-            observation.setImagePath(currentPhotoPath);
-        }
-
-        if (hikeDAO.addObservation(observation) > 0) {
-            Toast.makeText(this, "Saved!", Toast.LENGTH_SHORT).show();
-            obsDetailInput.setText("");
-            obsCommentInput.setText("");
-            imageViewObservation.setImageResource(android.R.drawable.ic_menu_camera);
-            currentPhotoPath = null;
-            setDefaultTime();
-            loadObservations();
-        }
-    }
-
-    private void loadObservations() {
-        observationList.clear();
-        observationList.addAll(hikeDAO.getObservationsForHike(hikeId));
-        adapter.notifyDataSetChanged();
-    }
-
-    private void loadParentHikeName() {
-        Hike parentHike = hikeDAO.getHike(hikeId);
-        if (parentHike != null) parentHikeNameTextView.setText("For Hike: " + parentHike.getName());
-    }
-
-    private void setDefaultTime() {
-        SimpleDateFormat sdf = new SimpleDateFormat("dd/MM/yyyy HH:mm:ss", Locale.getDefault());
-        obsTimeInput.setText(sdf.format(new Date()));
-    }
-
-    // --- CAMERA / GALLERY LAUNCHERS ---
+    // --- FEATURE: CAMERA & GALLERY INTEGRATION ---
     private void setupImageLaunchers() {
+        // Handle result from Camera
         cameraLauncher = registerForActivityResult(
-                new ActivityResultContracts.StartActivityForResult(),
+                new ActivityResultContracts.TakePicture(),
                 result -> {
-                    if (result.getResultCode() == RESULT_OK) {
+                    if (result) {
                         try {
-                            Bitmap bitmap = BitmapFactory.decodeFile(tempCameraPath);
+                            InputStream imageStream = getContentResolver().openInputStream(tempCameraUri);
+                            Bitmap bitmap = BitmapFactory.decodeStream(imageStream);
                             processAndDisplayImage(bitmap);
                         } catch (Exception e) { e.printStackTrace(); }
                     }
                 }
         );
 
+        // Handle result from Gallery
         galleryLauncher = registerForActivityResult(
-                new ActivityResultContracts.StartActivityForResult(),
-                result -> {
-                    if (result.getResultCode() == RESULT_OK && result.getData() != null) {
+                new ActivityResultContracts.GetContent(),
+                uri -> {
+                    if (uri != null) {
                         try {
-                            Uri selectedImage = result.getData().getData();
-                            InputStream imageStream = getContentResolver().openInputStream(selectedImage);
+                            InputStream imageStream = getContentResolver().openInputStream(uri);
                             Bitmap bitmap = BitmapFactory.decodeStream(imageStream);
                             processAndDisplayImage(bitmap);
                         } catch (Exception e) { e.printStackTrace(); }
@@ -276,49 +302,61 @@ public class ObservationActivity extends AppCompatActivity implements Observatio
         );
     }
 
-    private void processAndDisplayImage(Bitmap bitmap) throws IOException {
-        File compressedFile = compressAndSaveImage(bitmap);
-        currentPhotoPath = compressedFile.getAbsolutePath();
-        imageViewObservation.setImageBitmap(BitmapFactory.decodeFile(currentPhotoPath));
-    }
-
     private void showImagePickDialog() {
         String[] options = {"Take Photo", "Choose from Gallery"};
-        new AlertDialog.Builder(this).setItems(options, (dialog, which) -> {
-            if (which == 0) openCamera(); else openGallery();
-        }).show();
+        new AlertDialog.Builder(this)
+                .setTitle("Select Image Source")
+                .setItems(options, (dialog, which) -> {
+                    if (which == 0) openCamera(); else openGallery();
+                }).show();
     }
 
     private void openCamera() {
-        Intent takePictureIntent = new Intent(MediaStore.ACTION_IMAGE_CAPTURE);
-        if (takePictureIntent.resolveActivity(getPackageManager()) != null) {
-            File photoFile = null;
-            try { photoFile = createTempFile(); tempCameraPath = photoFile.getAbsolutePath(); }
-            catch (IOException ex) { }
-            if (photoFile != null) {
-                Uri photoURI = FileProvider.getUriForFile(this, "com.example.mhike.fileprovider", photoFile);
-                takePictureIntent.putExtra(MediaStore.EXTRA_OUTPUT, photoURI);
-                cameraLauncher.launch(takePictureIntent);
+        try {
+            tempCameraUri = createImageFile();
+            if(tempCameraUri != null) {
+                cameraLauncher.launch(tempCameraUri);
             }
+        } catch (IOException e) {
+            e.printStackTrace();
         }
     }
 
     private void openGallery() {
-        Intent intent = new Intent(Intent.ACTION_PICK, MediaStore.Images.Media.EXTERNAL_CONTENT_URI);
-        galleryLauncher.launch(intent);
+        galleryLauncher.launch("image/*");
     }
 
-    private File createTempFile() throws IOException {
+    // --- IMAGE UTILITIES: COMPRESSION & STORAGE ---
+
+    // Create a temporary file to store the raw image
+    private Uri createImageFile() throws IOException {
         String timeStamp = new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(new Date());
         File storageDir = getExternalFilesDir(Environment.DIRECTORY_PICTURES);
-        return File.createTempFile("JPEG_" + timeStamp + "_", ".jpg", storageDir);
+        File imageFile = File.createTempFile("JPEG_" + timeStamp + "_", ".jpg", storageDir);
+        return FileProvider.getUriForFile(this, "com.example.mhike.fileprovider", imageFile);
     }
 
+    // Compress the Bitmap to JPEG (50% quality) to save storage space and memory
     private File compressAndSaveImage(Bitmap bitmap) throws IOException {
-        File file = createTempFile();
+        File file = createTempFileForCompression();
         FileOutputStream fos = new FileOutputStream(file);
-        bitmap.compress(Bitmap.CompressFormat.JPEG, 50, fos);
+        bitmap.compress(Bitmap.CompressFormat.JPEG, 50, fos); // 50% Quality
+        fos.flush();
         fos.close();
         return file;
+    }
+
+    private File createTempFileForCompression() throws IOException {
+        String timeStamp = new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(new Date());
+        File storageDir = getExternalFilesDir(Environment.DIRECTORY_PICTURES);
+        return File.createTempFile("COMPRESSED_" + timeStamp + "_", ".jpg", storageDir);
+    }
+
+    // Display the processed image on the ImageView
+    private void processAndDisplayImage(Bitmap bitmap) throws IOException {
+        File compressedFile = compressAndSaveImage(bitmap);
+        currentPhotoPath = compressedFile.getAbsolutePath(); // Save path for DB
+        imageViewObservation.setImageBitmap(BitmapFactory.decodeFile(currentPhotoPath));
+        Toast.makeText(this, "Image attached!", Toast.LENGTH_SHORT).show();
     }
 }
