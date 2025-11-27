@@ -1,14 +1,10 @@
 package com.example.mhike.activity;
 
-import android.Manifest;
 import android.app.DatePickerDialog;
-import android.content.pm.PackageManager;
-import android.location.Address;
-import android.location.Geocoder;
+import android.content.Intent;
 import android.os.Bundle;
 import android.preference.PreferenceManager;
-import android.view.View; // Needed for LAYER_TYPE_SOFTWARE
-import android.view.inputmethod.EditorInfo;
+import android.view.View;
 import android.widget.ArrayAdapter;
 import android.widget.AutoCompleteTextView;
 import android.widget.Button;
@@ -17,16 +13,14 @@ import android.widget.RadioButton;
 import android.widget.RadioGroup;
 import android.widget.Toast;
 
-import androidx.annotation.NonNull;
+import androidx.activity.result.ActivityResultLauncher;
+import androidx.activity.result.contract.ActivityResultContracts;
 import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.app.AppCompatActivity;
-import androidx.core.app.ActivityCompat;
 
 import com.example.mhike.R;
 import com.example.mhike.database.HikeDAO;
 import com.example.mhike.model.Hike;
-import com.google.android.gms.location.FusedLocationProviderClient;
-import com.google.android.gms.location.LocationServices;
 
 import org.osmdroid.config.Configuration;
 import org.osmdroid.tileprovider.tilesource.TileSourceFactory;
@@ -34,58 +28,67 @@ import org.osmdroid.util.GeoPoint;
 import org.osmdroid.views.MapView;
 import org.osmdroid.views.overlay.Marker;
 
-import java.io.IOException;
 import java.util.Calendar;
-import java.util.List;
-import java.util.Locale;
 
 public class AddHikeActivity extends AppCompatActivity {
 
+    // UI Components
     private EditText nameInput, locationInput, dateInput, lengthInput, descriptionInput, custom1Input, custom2Input;
     private RadioGroup parkingGroup;
     private AutoCompleteTextView difficultySpinner;
     private Button saveButton, btnGetLocation;
-    private DatePickerDialog datePickerDialog;
-    private MapView mapView;
+
+    // Map Preview Components
+    private MapView mapPreview;
+    private View cardMapPreview;
+
+    // Logic Components
     private HikeDAO hikeDAO;
-    private FusedLocationProviderClient fusedLocationClient;
-    private static final int REQUEST_LOCATION_PERMISSION = 1;
+    private ActivityResultLauncher<Intent> mapPickerLauncher;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
-        // FIX 1: Add User Agent to prevent server blocking
+        // --- MAP CONFIGURATION ---
+        // FIX 1: Set User Agent to prevent OpenStreetMap servers from blocking the app.
+        // This MUST be called before setContentView.
         Configuration.getInstance().load(getApplicationContext(), PreferenceManager.getDefaultSharedPreferences(getApplicationContext()));
         Configuration.getInstance().setUserAgentValue("com.example.mhike");
 
         setContentView(R.layout.activity_add_hike);
 
+        // Setup Toolbar
         com.google.android.material.appbar.MaterialToolbar toolbar = findViewById(R.id.toolbar);
         toolbar.setNavigationOnClickListener(v -> finish());
 
+        // Initialize Database Helper
         hikeDAO = new HikeDAO(this);
-        fusedLocationClient = LocationServices.getFusedLocationProviderClient(this);
 
+        // Initialize Views and Map Configuration
         initializeViews();
+        setupMapPreviewConfig();
+        setupMapPickerLauncher();
 
+        // --- LISTENERS ---
+
+        // Date Picker
         dateInput.setOnClickListener(v -> showDatePickerDialog());
-        btnGetLocation.setOnClickListener(v -> requestLocation());
 
-        locationInput.setOnEditorActionListener((v, actionId, event) -> {
-            if (actionId == EditorInfo.IME_ACTION_SEARCH || actionId == EditorInfo.IME_ACTION_DONE) {
-                String address = locationInput.getText().toString();
-                if (!address.isEmpty()) searchLocationFromAddress(address);
-                return true;
-            }
-            return false;
-        });
+        // Open Full Screen Map (PickLocationActivity) when clicking button or text field
+        btnGetLocation.setOnClickListener(v -> openMapScreen());
+        locationInput.setFocusable(false); // Disable keyboard for location input
+        locationInput.setOnClickListener(v -> openMapScreen());
 
+        // Save Button Logic
         saveButton.setOnClickListener(v -> {
             if (isInputValid()) {
+                // Get selected Parking option
                 int selectedId = parkingGroup.getCheckedRadioButtonId();
                 String parkingStatus = (selectedId != -1) ?
                         ((RadioButton) findViewById(selectedId)).getText().toString() : "No";
+
+                // Show confirmation dialog
                 showConfirmationDialog(parkingStatus);
             }
         });
@@ -104,98 +107,87 @@ public class AddHikeActivity extends AppCompatActivity {
         saveButton = findViewById(R.id.buttonSaveHike);
         btnGetLocation = findViewById(R.id.btnGetLocation);
 
-        // --- MAP SETUP ---
-        mapView = findViewById(R.id.mapView);
+        // Map Preview Views
+        mapPreview = findViewById(R.id.mapView);
+        cardMapPreview = findViewById(R.id.cardMapPreview);
 
-        // FIX 2: THIS LINE FIXES THE WHITE SCREEN ON EMULATORS
-        mapView.setLayerType(View.LAYER_TYPE_SOFTWARE, null);
-
-        mapView.setTileSource(TileSourceFactory.MAPNIK);
-        mapView.setMultiTouchControls(true);
-        mapView.getController().setZoom(15.0);
-
+        // Spinner Adapter
         ArrayAdapter<CharSequence> adapter = ArrayAdapter.createFromResource(this, R.array.difficulty_levels, android.R.layout.simple_spinner_item);
         adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
         difficultySpinner.setAdapter(adapter);
     }
 
-    private void requestLocation() {
-        if (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
-            ActivityCompat.requestPermissions(this, new String[]{Manifest.permission.ACCESS_FINE_LOCATION}, REQUEST_LOCATION_PERMISSION);
-            return;
-        }
+    // --- MAP PREVIEW CONFIGURATION ---
+    private void setupMapPreviewConfig() {
+        // FIX 2: Disable Hardware Acceleration to prevent "White Screen" on Emulator
+        mapPreview.setLayerType(View.LAYER_TYPE_SOFTWARE, null);
 
-        fusedLocationClient.getLastLocation().addOnSuccessListener(this, location -> {
-            if (location != null) {
-                updateMapMarker(location.getLatitude(), location.getLongitude(), "Current Location");
-                try {
-                    Geocoder geocoder = new Geocoder(AddHikeActivity.this, Locale.getDefault());
-                    List<Address> addresses = geocoder.getFromLocation(location.getLatitude(), location.getLongitude(), 1);
-                    if (addresses != null && !addresses.isEmpty()) {
-                        locationInput.setText(addresses.get(0).getAddressLine(0));
-                    } else {
-                        locationInput.setText(location.getLatitude() + ", " + location.getLongitude());
+        mapPreview.setTileSource(TileSourceFactory.MAPNIK);
+        mapPreview.setMultiTouchControls(false); // Disable touch (static preview)
+        mapPreview.getController().setZoom(16.0); // Set default zoom level
+    }
+
+    // --- HANDLE RESULT FROM MAP PICKER ACTIVITY ---
+    private void setupMapPickerLauncher() {
+        mapPickerLauncher = registerForActivityResult(
+                new ActivityResultContracts.StartActivityForResult(),
+                result -> {
+                    if (result.getResultCode() == RESULT_OK && result.getData() != null) {
+                        Intent data = result.getData();
+                        String address = data.getStringExtra("SELECTED_ADDRESS");
+                        double lat = data.getDoubleExtra("SELECTED_LAT", 0);
+                        double lon = data.getDoubleExtra("SELECTED_LON", 0);
+
+                        // 1. Set the address text
+                        locationInput.setText(address);
+
+                        // 2. Show and Update Map Preview
+                        if (lat != 0 && lon != 0) {
+                            cardMapPreview.setVisibility(View.VISIBLE); // Show the card
+                            GeoPoint point = new GeoPoint(lat, lon);
+
+                            // Move camera to selected point
+                            mapPreview.getController().setCenter(point);
+
+                            // Add a marker to the preview map
+                            mapPreview.getOverlays().clear();
+                            Marker marker = new Marker(mapPreview);
+                            marker.setPosition(point);
+                            marker.setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM);
+                            mapPreview.getOverlays().add(marker);
+
+                            // Refresh map to ensure marker is drawn
+                            mapPreview.invalidate();
+                        }
                     }
-                } catch (IOException e) {
-                    locationInput.setText(location.getLatitude() + ", " + location.getLongitude());
                 }
-                Toast.makeText(AddHikeActivity.this, "Location Found!", Toast.LENGTH_SHORT).show();
-            } else {
-                Toast.makeText(AddHikeActivity.this, "GPS unavailable. Open Maps in Emulator to set location.", Toast.LENGTH_LONG).show();
-            }
-        });
+        );
     }
 
-    private void searchLocationFromAddress(String addressString) {
-        Geocoder geocoder = new Geocoder(this, Locale.getDefault());
-        try {
-            List<Address> list = geocoder.getFromLocationName(addressString, 1);
-            if (list != null && !list.isEmpty()) {
-                Address address = list.get(0);
-                updateMapMarker(address.getLatitude(), address.getLongitude(), addressString);
-            } else {
-                Toast.makeText(this, "Address not found", Toast.LENGTH_SHORT).show();
-            }
-        } catch (IOException e) {
-            e.printStackTrace();
-        }
+    private void openMapScreen() {
+        Intent intent = new Intent(AddHikeActivity.this, PickLocationActivity.class);
+        mapPickerLauncher.launch(intent);
     }
 
-    private void updateMapMarker(double lat, double lon, String title) {
-        GeoPoint point = new GeoPoint(lat, lon);
-        mapView.getController().animateTo(point);
-        mapView.getController().setZoom(16.0);
-        mapView.getOverlays().clear();
-        Marker marker = new Marker(mapView);
-        marker.setPosition(point);
-        marker.setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM);
-        marker.setTitle(title);
-        mapView.getOverlays().add(marker);
-        mapView.invalidate();
-    }
-
-    // FIX 3: LIFECYCLE METHODS - CRITICAL FOR MAP DISPLAY
+    // --- CRITICAL FIX 3: LIFECYCLE METHODS ---
+    // Without these, the MapView will remain white/blank when returning from another activity.
     @Override
-    public void onResume() {
+    protected void onResume() {
         super.onResume();
-        if (mapView != null) mapView.onResume();
-    }
-
-    @Override
-    public void onPause() {
-        super.onPause();
-        if (mapView != null) mapView.onPause();
-    }
-
-    @Override
-    public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions, @NonNull int[] grantResults) {
-        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
-        if (requestCode == REQUEST_LOCATION_PERMISSION) {
-            if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
-                requestLocation();
-            }
+        if (mapPreview != null) {
+            mapPreview.onResume(); // Resume map rendering
         }
     }
+
+    @Override
+    protected void onPause() {
+        super.onPause();
+        if (mapPreview != null) {
+            mapPreview.onPause(); // Pause map rendering to save battery
+        }
+    }
+
+    // --- HELPER METHODS (Date, Validation, Save) ---
 
     private void showDatePickerDialog() {
         final Calendar c = Calendar.getInstance();
@@ -203,30 +195,32 @@ public class AddHikeActivity extends AppCompatActivity {
         int month = c.get(Calendar.MONTH);
         int day = c.get(Calendar.DAY_OF_MONTH);
 
-        datePickerDialog = new DatePickerDialog(this,
-                (view, year1, monthOfYear, dayOfMonth) -> {
-                    String selectedDate = String.format("%02d/%02d/%d", dayOfMonth, monthOfYear + 1, year1);
-                    dateInput.setText(selectedDate);
-                }, year, month, day);
-        datePickerDialog.show();
+        new DatePickerDialog(this, (view, y, m, d) -> {
+            dateInput.setText(String.format("%02d/%02d/%d", d, m + 1, y));
+        }, year, month, day).show();
     }
 
     private boolean isInputValid() {
         boolean valid = true;
         if (nameInput.getText().toString().trim().isEmpty()) {
-            nameInput.setError("Required"); valid = false;
+            nameInput.setError("Required");
+            valid = false;
         }
         if (locationInput.getText().toString().trim().isEmpty()) {
-            locationInput.setError("Required"); valid = false;
+            locationInput.setError("Required");
+            valid = false;
         }
         if (dateInput.getText().toString().trim().isEmpty()) {
-            dateInput.setError("Required"); valid = false;
+            dateInput.setError("Required");
+            valid = false;
         }
         if (lengthInput.getText().toString().trim().isEmpty()) {
-            lengthInput.setError("Required"); valid = false;
+            lengthInput.setError("Required");
+            valid = false;
         }
         if (parkingGroup.getCheckedRadioButtonId() == -1) {
-            Toast.makeText(this, "Parking required", Toast.LENGTH_SHORT).show(); valid = false;
+            Toast.makeText(this, "Parking required", Toast.LENGTH_SHORT).show();
+            valid = false;
         }
         return valid;
     }
@@ -249,7 +243,10 @@ public class AddHikeActivity extends AppCompatActivity {
         hike.setDate(dateInput.getText().toString().trim());
         try {
             hike.setLength(Double.parseDouble(lengthInput.getText().toString().trim()));
-        } catch (NumberFormatException e) { return; }
+        } catch (NumberFormatException e) {
+            Toast.makeText(this, "Invalid Length", Toast.LENGTH_SHORT).show();
+            return;
+        }
 
         hike.setDifficulty(difficultySpinner.getText().toString());
         hike.setParkingAvailable(parkingStatus);
@@ -257,9 +254,10 @@ public class AddHikeActivity extends AppCompatActivity {
         hike.setCustomField1(custom1Input.getText().toString().trim());
         hike.setCustomField2(custom2Input.getText().toString().trim());
 
+        // Save to Database
         if (hikeDAO.addHike(hike) > 0) {
             Toast.makeText(this, "Hike Saved!", Toast.LENGTH_SHORT).show();
-            finish();
+            finish(); // Return to previous screen
         } else {
             Toast.makeText(this, "Save Failed", Toast.LENGTH_SHORT).show();
         }
